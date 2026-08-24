@@ -41,7 +41,10 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-cleaned")
+# NOTE: "5CD-AI/Vietnamese-alpaca-cleaned" (original default) is 404 on the
+# Hub. Swapped to "saillab/alpaca-vietnamese-cleaned" -- same
+# instruction/input/output schema, same VN Alpaca content.
+SFT_DATASET = os.environ.get("SFT_DATASET", "saillab/alpaca-vietnamese-cleaned")
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
 
