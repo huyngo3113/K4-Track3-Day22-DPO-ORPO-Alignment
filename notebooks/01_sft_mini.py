@@ -42,9 +42,9 @@ else:  # BIGGPU
     GRAD_ACCUM = 4
 
 # NOTE: "5CD-AI/Vietnamese-alpaca-cleaned" (original default) is 404 on the
-# Hub. Swapped to "saillab/alpaca-vietnamese-cleaned" -- same
+# Hub. Swapped to "bkai-foundation-models/vi-alpaca" -- same
 # instruction/input/output schema, same VN Alpaca content.
-SFT_DATASET = os.environ.get("SFT_DATASET", "saillab/alpaca-vietnamese-cleaned")
+SFT_DATASET = os.environ.get("SFT_DATASET", "bkai-foundation-models/vi-alpaca")
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
 
