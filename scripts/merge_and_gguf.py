@@ -44,6 +44,7 @@ def main():
 
     from peft import PeftModel
     from unsloth import FastLanguageModel
+    from unsloth.chat_templates import get_chat_template
     import gc
     import torch
 
@@ -51,6 +52,7 @@ def main():
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base, max_seq_length=max_len, dtype=None, load_in_4bit=True,
     )
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 

@@ -57,6 +57,7 @@ assert torch.cuda.is_available()
 
 # %%
 from unsloth import FastLanguageModel
+from unsloth.chat_templates import get_chat_template
 from peft import PeftModel
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -65,6 +66,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype=None,
     load_in_4bit=True,
 )
+tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 

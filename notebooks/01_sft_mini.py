@@ -75,6 +75,7 @@ print(f"GPU: {gpu.name}  ({gpu.total_memory / 1e9:.1f} GB)")
 
 # %%
 from unsloth import FastLanguageModel
+from unsloth.chat_templates import get_chat_template
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL,
@@ -82,6 +83,10 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype=None,                # auto: bf16 on Ampere+, fp16 on Turing
     load_in_4bit=True,
 )
+
+# `unsloth/Qwen2.5-*-bnb-4bit` is the base (non-Instruct) checkpoint — it
+# ships without a chat_template, so apply_chat_template() would raise later.
+tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 
 # Critical for batch training — Qwen tokenizers ship without pad token.
 if tokenizer.pad_token is None:

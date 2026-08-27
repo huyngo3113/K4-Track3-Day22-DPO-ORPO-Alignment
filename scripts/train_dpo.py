@@ -52,10 +52,12 @@ def main():
     from peft import PeftModel
     from trl import DPOConfig, DPOTrainer
     from unsloth import FastLanguageModel
+    from unsloth.chat_templates import get_chat_template
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base_model, max_seq_length=max_len, dtype=None, load_in_4bit=True,
     )
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
