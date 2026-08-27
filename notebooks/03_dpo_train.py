@@ -76,15 +76,23 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # sequences, not from a second copy of the weights.
 
 # %%
-import os
+# xformers' Triton GQA kernel (what Unsloth's fast attention calls for
+# Qwen2.5) requires compute capability >= 8.0 (Ampere+). DPOTrainer is the
+# first place that hits it because its backward pass runs on the
+# concatenated chosen+rejected batch -- NB1/SFT never triggers a backward
+# through this kernel. UNSLOTH_COMPILE_DISABLE does NOT avoid this: the
+# xformers call isn't behind Unsloth's torch.compile path. Uninstalling
+# xformers on sub-Ampere GPUs is what actually removes the broken code path
+# -- HF/Unsloth then use PyTorch's native SDPA attention, which has no
+# capability floor. ponytail: slower DPO step on T4; the branch is a no-op
+# on A100/L4 (BigGPU tier), where xformers works and stays installed.
+import subprocess
+import sys
 
-# T4 (compute capability 7.5) can't run xformers' Triton GQA kernel used by
-# Unsloth's compiled attention path for Qwen2.5 -- that kernel requires
-# capability >= 8.0 (Ampere+), and DPOTrainer is the notebook that actually
-# triggers a backward pass through it (concatenated chosen+rejected batch).
-# Disabling Unsloth's auto-compiler falls back to plain HF attention, which
-# works on any GPU. ponytail: slower DPO step on T4; drop this line on A100+.
-os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+major, minor = torch.cuda.get_device_capability()
+if (major, minor) < (8, 0):
+    print(f"GPU capability {major}.{minor} < 8.0 -- uninstalling xformers so attention falls back to SDPA.")
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "xformers"], check=False)
 
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template

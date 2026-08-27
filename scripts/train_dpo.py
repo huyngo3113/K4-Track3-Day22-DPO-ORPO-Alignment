@@ -47,15 +47,24 @@ def main():
     print(f"Beta / LR:  {args.beta} / {args.lr}")
     print(f"Output:     {output}")
 
-    # T4 (capability 7.5) can't run xformers' Triton GQA kernel Unsloth uses for
-    # Qwen2.5 -- requires capability >= 8.0. DPOTrainer's backward pass over the
-    # concatenated chosen+rejected batch is what actually hits it.
-    os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+    import subprocess
+    import sys
 
     import torch
     from datasets import Dataset
     from peft import PeftModel
     from trl import DPOConfig, DPOTrainer
+
+    # xformers' Triton GQA kernel (Unsloth's fast attention for Qwen2.5)
+    # requires capability >= 8.0. DPOTrainer's backward pass over the
+    # concatenated chosen+rejected batch is what hits it on older GPUs.
+    # UNSLOTH_COMPILE_DISABLE does NOT avoid this -- the call isn't behind
+    # Unsloth's torch.compile path. Uninstalling xformers forces a fallback
+    # to PyTorch's native SDPA attention instead, which has no floor.
+    major, minor = torch.cuda.get_device_capability()
+    if (major, minor) < (8, 0):
+        print(f"GPU capability {major}.{minor} < 8.0 -- uninstalling xformers so attention falls back to SDPA.")
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "xformers"], check=False)
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template
 
