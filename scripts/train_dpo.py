@@ -47,42 +47,58 @@ def main():
     print(f"Beta / LR:  {args.beta} / {args.lr}")
     print(f"Output:     {output}")
 
-    import subprocess
-    import sys
-
     import torch
     from datasets import Dataset
-    from peft import PeftModel
+    from peft import PeftModel, LoraConfig, get_peft_model
     from trl import DPOConfig, DPOTrainer
+    from unsloth.chat_templates import get_chat_template
+
+    lora_kwargs = dict(
+        r=16, lora_alpha=32, lora_dropout=0.0, bias="none",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+    )
 
     # xformers' Triton GQA kernel (Unsloth's fast attention for Qwen2.5)
     # requires capability >= 8.0. DPOTrainer's backward pass over the
     # concatenated chosen+rejected batch is what hits it on older GPUs.
-    # UNSLOTH_COMPILE_DISABLE does NOT avoid this -- the call isn't behind
-    # Unsloth's torch.compile path. Uninstalling xformers forces a fallback
-    # to PyTorch's native SDPA attention instead, which has no floor.
+    # Neither UNSLOTH_COMPILE_DISABLE nor uninstalling xformers avoids this
+    # in practice (confirmed on a real T4) -- Unsloth's attention patch
+    # calls xformers directly regardless of config or installed packages.
+    # Skip FastLanguageModel entirely on sub-Ampere GPUs and use plain
+    # transformers + peft with attn_implementation="eager" instead.
     major, minor = torch.cuda.get_device_capability()
     if (major, minor) < (8, 0):
-        print(f"GPU capability {major}.{minor} < 8.0 -- uninstalling xformers so attention falls back to SDPA.")
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "xformers"], check=False)
-    from unsloth import FastLanguageModel
-    from unsloth.chat_templates import get_chat_template
+        print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention).")
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=base_model, max_seq_length=max_len, dtype=None, load_in_4bit=True,
-    )
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    model = PeftModel.from_pretrained(model, args.sft_path, is_trainable=True)
-    model = FastLanguageModel.get_peft_model(
-        model, r=16, lora_alpha=32, lora_dropout=0.0, bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        use_gradient_checkpointing="unsloth",
-        random_state=42, use_rslora=False, loftq_config=None,
-    )
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model, dtype=torch.float16, attn_implementation="eager", device_map={"": 0},
+        )
+        model = PeftModel.from_pretrained(base, args.sft_path, is_trainable=True)
+        model = get_peft_model(model, LoraConfig(task_type="CAUSAL_LM", **lora_kwargs))
+        model.gradient_checkpointing_enable()
+    else:
+        from unsloth import FastLanguageModel
+
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=base_model, max_seq_length=max_len, dtype=None, load_in_4bit=True,
+        )
+        tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        model = PeftModel.from_pretrained(model, args.sft_path, is_trainable=True)
+        model = FastLanguageModel.get_peft_model(
+            model, use_gradient_checkpointing="unsloth",
+            random_state=42, use_rslora=False, loftq_config=None,
+            **lora_kwargs,
+        )
 
     config = DPOConfig(
         output_dir=str(output.parent / f"{output.name}-checkpoints"),

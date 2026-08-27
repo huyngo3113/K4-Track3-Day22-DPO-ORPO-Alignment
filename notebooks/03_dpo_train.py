@@ -80,44 +80,19 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # Qwen2.5) requires compute capability >= 8.0 (Ampere+). DPOTrainer is the
 # first place that hits it because its backward pass runs on the
 # concatenated chosen+rejected batch -- NB1/SFT never triggers a backward
-# through this kernel. UNSLOTH_COMPILE_DISABLE does NOT avoid this: the
-# xformers call isn't behind Unsloth's torch.compile path. Uninstalling
-# xformers on sub-Ampere GPUs is what actually removes the broken code path
-# -- HF/Unsloth then use PyTorch's native SDPA attention, which has no
-# capability floor. ponytail: slower DPO step on T4; the branch is a no-op
-# on A100/L4 (BigGPU tier), where xformers works and stays installed.
-import subprocess
-import sys
-
-major, minor = torch.cuda.get_device_capability()
-if (major, minor) < (8, 0):
-    print(f"GPU capability {major}.{minor} < 8.0 -- uninstalling xformers so attention falls back to SDPA.")
-    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "xformers"], check=False)
-
-from unsloth import FastLanguageModel
+# through this kernel. Neither UNSLOTH_COMPILE_DISABLE nor uninstalling
+# xformers avoids this in practice (confirmed on a real T4): Unsloth's
+# attention patch calls xformers directly regardless of config or installed
+# packages. The only reliable escape is to skip Unsloth's patched attention
+# for this one model load and use plain transformers + peft instead, with
+# attn_implementation="eager" (pure matmul+softmax -- no xformers, no SDPA,
+# no capability floor). ponytail: slower DPO step + no Unsloth gradient
+# -checkpointing trick on T4; the branch is a no-op on BigGPU (A100/L4 are
+# capability 8.0+), where FastLanguageModel keeps the fast path.
 from unsloth.chat_templates import get_chat_template
-from peft import PeftModel
+from peft import PeftModel, LoraConfig, get_peft_model
 
-# Policy — gets new DPO LoRA adapter on top of SFT LoRA
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=BASE_MODEL,
-    max_seq_length=MAX_LEN,
-    dtype=None,
-    load_in_4bit=True,
-)
-tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-# Load SFT adapter on top of base
-model = PeftModel.from_pretrained(model, str(SFT_PATH), is_trainable=True)
-print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
-
-# %%
-# Wrap policy with NEW LoRA adapter for DPO updates (don't merge SFT — keep stacked)
-# Unsloth re-applies LoRA on top of the existing PeftModel.
-model = FastLanguageModel.get_peft_model(
-    model,
+LORA_KWARGS = dict(
     r=16,
     lora_alpha=32,
     lora_dropout=0.0,
@@ -126,11 +101,54 @@ model = FastLanguageModel.get_peft_model(
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    use_gradient_checkpointing="unsloth",
-    random_state=42,
-    use_rslora=False,
-    loftq_config=None,
 )
+
+major, minor = torch.cuda.get_device_capability()
+if (major, minor) < (8, 0):
+    print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention), skipping Unsloth's xformers-based fast path.")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    base = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL, dtype=torch.float16, attn_implementation="eager", device_map={"": 0},
+    )
+    model = PeftModel.from_pretrained(base, str(SFT_PATH), is_trainable=True)
+    print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
+
+    model = get_peft_model(model, LoraConfig(task_type="CAUSAL_LM", **LORA_KWARGS))
+    model.gradient_checkpointing_enable()
+else:
+    from unsloth import FastLanguageModel
+
+    # Policy — gets new DPO LoRA adapter on top of SFT LoRA
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=BASE_MODEL,
+        max_seq_length=MAX_LEN,
+        dtype=None,
+        load_in_4bit=True,
+    )
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Load SFT adapter on top of base
+    model = PeftModel.from_pretrained(model, str(SFT_PATH), is_trainable=True)
+    print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
+
+    # Wrap policy with NEW LoRA adapter for DPO updates (don't merge SFT — keep stacked)
+    # Unsloth re-applies LoRA on top of the existing PeftModel.
+    model = FastLanguageModel.get_peft_model(
+        model,
+        use_gradient_checkpointing="unsloth",
+        random_state=42,
+        use_rslora=False,
+        loftq_config=None,
+        **LORA_KWARGS,
+    )
 print(f"Trainable params (DPO LoRA): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
 # %% [markdown]
