@@ -47,6 +47,11 @@ def main():
     print(f"Beta / LR:  {args.beta} / {args.lr}")
     print(f"Output:     {output}")
 
+    # T4 (capability 7.5) can't run xformers' Triton GQA kernel Unsloth uses for
+    # Qwen2.5 -- requires capability >= 8.0. DPOTrainer's backward pass over the
+    # concatenated chosen+rejected batch is what actually hits it.
+    os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+
     import torch
     from datasets import Dataset
     from peft import PeftModel

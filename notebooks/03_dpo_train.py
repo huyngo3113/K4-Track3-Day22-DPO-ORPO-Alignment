@@ -76,6 +76,16 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # sequences, not from a second copy of the weights.
 
 # %%
+import os
+
+# T4 (compute capability 7.5) can't run xformers' Triton GQA kernel used by
+# Unsloth's compiled attention path for Qwen2.5 -- that kernel requires
+# capability >= 8.0 (Ampere+), and DPOTrainer is the notebook that actually
+# triggers a backward pass through it (concatenated chosen+rejected batch).
+# Disabling Unsloth's auto-compiler falls back to plain HF attention, which
+# works on any GPU. ponytail: slower DPO step on T4; drop this line on A100+.
+os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
 from peft import PeftModel
