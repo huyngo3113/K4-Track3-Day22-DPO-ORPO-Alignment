@@ -75,7 +75,7 @@ See [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) — completely separate, no point
 1. Push your work to `huyngo3113/K4-Track3-Day22-DPO-ORPO-Alignment` (forked or fresh repo — both fine), set repo **public**.
 2. Include:
    - 5 executed notebooks (`.ipynb` with output cells preserved) OR a single executed `colab/Lab22_DPO_T4.ipynb` if you used the Colab path
-   - `submission/screenshots/` — 6 required + 3 optional images
+   - `submission/screenshots/` — 5 required (core) + up to 5 optional (bonus add-ons)
    - `submission/REFLECTION.md` — all 6 sections filled, your own numbers
    - **Optional:** `bonus/` folder for the ungraded creative challenge
 3. Run `make verify` locally — it will list missing artifacts, exit non-zero until you fix them.

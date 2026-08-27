@@ -211,7 +211,7 @@ Full provocations: [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) (tiếng Việt) �
 ├── adapters/                       # gitignored; SFT + DPO outputs
 ├── submission/
 │   ├── REFLECTION.md               # personal report template (6 sections)
-│   └── screenshots/                # add 6 required + 3 optional screenshots
+│   └── screenshots/                # add 5 required + up to 5 optional screenshots
 └── solutions/                      # released after submission deadline
     └── README.md
 ```
@@ -247,7 +247,7 @@ Full provocations: [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) (tiếng Việt) �
    git remote add origin https://github.com/huyngo3113/K4-Track3-Day22-DPO-ORPO-Alignment.git
    ```
 2. Hoàn thành 5 notebooks (giữ output cells trong `.ipynb`).
-3. Add ảnh chụp vào `submission/screenshots/` (xem [`submission/screenshots/README.md`](submission/screenshots/README.md) để biết list 6+3).
+3. Add ảnh chụp vào `submission/screenshots/` (xem [`submission/screenshots/README.md`](submission/screenshots/README.md) để biết list 5 required + 5 optional).
 4. Điền [`submission/REFLECTION.md`](submission/REFLECTION.md) (6 sections, ≥150 từ §3 + §6).
 5. `make verify` — pre-submission gatekeeper. Nếu fail, fix và rerun.
 6. Push lên public repo:
