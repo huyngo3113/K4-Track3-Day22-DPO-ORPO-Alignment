@@ -27,12 +27,14 @@ COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
 if COMPUTE_TIER == "T4":
     BASE_MODEL = "unsloth/Qwen2.5-3B-bnb-4bit"
+    INSTRUCT_MODEL = "Qwen/Qwen2.5-3B-Instruct"  # chat_template source on the no-Unsloth fallback path
     MAX_LEN = 512
     MAX_PROMPT_LEN = 256
     PER_DEVICE_BATCH = 1
     GRAD_ACCUM = 8
 else:
     BASE_MODEL = "unsloth/Qwen2.5-7B-bnb-4bit"
+    INSTRUCT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
     MAX_LEN = 1024
     MAX_PROMPT_LEN = 512
     PER_DEVICE_BATCH = 1
@@ -80,16 +82,31 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # Qwen2.5) requires compute capability >= 8.0 (Ampere+). DPOTrainer is the
 # first place that hits it because its backward pass runs on the
 # concatenated chosen+rejected batch -- NB1/SFT never triggers a backward
-# through this kernel. Neither UNSLOTH_COMPILE_DISABLE nor uninstalling
-# xformers avoids this in practice (confirmed on a real T4): Unsloth's
-# attention patch calls xformers directly regardless of config or installed
-# packages. The only reliable escape is to skip Unsloth's patched attention
-# for this one model load and use plain transformers + peft instead, with
-# attn_implementation="eager" (pure matmul+softmax -- no xformers, no SDPA,
-# no capability floor). ponytail: slower DPO step + no Unsloth gradient
-# -checkpointing trick on T4; the branch is a no-op on BigGPU (A100/L4 are
-# capability 8.0+), where FastLanguageModel keeps the fast path.
-from unsloth.chat_templates import get_chat_template
+# through this kernel.
+#
+# **This is a process-wide monkeypatch, not a per-model setting.** `import
+# unsloth` (even indirectly, e.g. `from unsloth.chat_templates import ...`)
+# patches `Qwen2Attention.forward` at the class level for the whole Python
+# process -- so a plain `transformers.AutoModelForCausalLM` load is
+# affected too if Unsloth was ever imported earlier in this kernel (e.g. by
+# running NB1 in the same session). Passing `attn_implementation="eager"`
+# does NOT override this, because the patch replaces the method, not the
+# config-driven dispatch.
+#
+# **You must restart the runtime AFTER NB1 and BEFORE this cell** so this
+# kernel has never imported unsloth. NB1's adapter is already saved to
+# disk, so you don't need to re-run its training cell -- NB2 doesn't
+# import unsloth either (it loads the tokenizer from the saved adapter
+# dir), so re-running NB2 then this cell in the fresh kernel is enough.
+if COMPUTE_TIER == "T4":
+    import sys
+    assert "unsloth" not in sys.modules, (
+        "unsloth is already imported in this kernel (likely from running NB1 in the "
+        "same session). Its attention patch is process-wide and attn_implementation="
+        "\"eager\" cannot override it. Restart the runtime, then re-run from NB2 -- "
+        "NB1's adapter is already saved to disk, no need to retrain it."
+    )
+
 from peft import PeftModel, LoraConfig, get_peft_model
 
 LORA_KWARGS = dict(
@@ -105,11 +122,14 @@ LORA_KWARGS = dict(
 
 major, minor = torch.cuda.get_device_capability()
 if (major, minor) < (8, 0):
-    print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention), skipping Unsloth's xformers-based fast path.")
+    print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention), never importing unsloth.")
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+    # unsloth.chat_templates.get_chat_template() would re-trigger the global
+    # patch we're avoiding -- copy the chat_template from the Instruct
+    # sibling instead (same family, same template, zero unsloth import).
+    tokenizer.chat_template = AutoTokenizer.from_pretrained(INSTRUCT_MODEL).chat_template
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -123,6 +143,7 @@ if (major, minor) < (8, 0):
     model.gradient_checkpointing_enable()
 else:
     from unsloth import FastLanguageModel
+    from unsloth.chat_templates import get_chat_template
 
     # Policy — gets new DPO LoRA adapter on top of SFT LoRA
     model, tokenizer = FastLanguageModel.from_pretrained(

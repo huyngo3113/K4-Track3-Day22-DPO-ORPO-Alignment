@@ -32,10 +32,12 @@ def main():
     tier = os.environ.get("COMPUTE_TIER", "T4").upper()
     if tier == "T4":
         base_model = "unsloth/Qwen2.5-3B-bnb-4bit"
+        instruct_model = "Qwen/Qwen2.5-3B-Instruct"
         max_len, max_prompt = 512, 256
         batch, grad_accum = 1, 8
     else:
         base_model = "unsloth/Qwen2.5-7B-bnb-4bit"
+        instruct_model = "Qwen/Qwen2.5-7B-Instruct"
         max_len, max_prompt = 1024, 512
         batch, grad_accum = 1, 4
 
@@ -51,7 +53,6 @@ def main():
     from datasets import Dataset
     from peft import PeftModel, LoraConfig, get_peft_model
     from trl import DPOConfig, DPOTrainer
-    from unsloth.chat_templates import get_chat_template
 
     lora_kwargs = dict(
         r=16, lora_alpha=32, lora_dropout=0.0, bias="none",
@@ -62,18 +63,29 @@ def main():
     # xformers' Triton GQA kernel (Unsloth's fast attention for Qwen2.5)
     # requires capability >= 8.0. DPOTrainer's backward pass over the
     # concatenated chosen+rejected batch is what hits it on older GPUs.
-    # Neither UNSLOTH_COMPILE_DISABLE nor uninstalling xformers avoids this
-    # in practice (confirmed on a real T4) -- Unsloth's attention patch
-    # calls xformers directly regardless of config or installed packages.
-    # Skip FastLanguageModel entirely on sub-Ampere GPUs and use plain
-    # transformers + peft with attn_implementation="eager" instead.
+    #
+    # This is a process-wide monkeypatch, not a per-model setting: `import
+    # unsloth` (even `from unsloth.chat_templates import ...`) patches
+    # Qwen2Attention.forward at the class level for the whole interpreter,
+    # so a later plain transformers load in the SAME process is affected
+    # too, regardless of attn_implementation. If NB1/train_sft ran earlier
+    # in this process, unsloth is already imported and this branch cannot
+    # help -- run this script in a fresh process instead.
     major, minor = torch.cuda.get_device_capability()
     if (major, minor) < (8, 0):
-        print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention).")
+        import sys
+        assert "unsloth" not in sys.modules, (
+            "unsloth is already imported in this process -- its attention patch is "
+            "process-wide and cannot be undone here. Run train_dpo.py in a fresh "
+            "process (it only needs the SFT adapter already saved on disk)."
+        )
+        print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention), never importing unsloth.")
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(base_model)
-        tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+        # unsloth.chat_templates.get_chat_template() would re-trigger the global
+        # patch we're avoiding -- copy the chat_template from the Instruct sibling.
+        tokenizer.chat_template = AutoTokenizer.from_pretrained(instruct_model).chat_template
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -85,6 +97,7 @@ def main():
         model.gradient_checkpointing_enable()
     else:
         from unsloth import FastLanguageModel
+        from unsloth.chat_templates import get_chat_template
 
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model, max_seq_length=max_len, dtype=None, load_in_4bit=True,
