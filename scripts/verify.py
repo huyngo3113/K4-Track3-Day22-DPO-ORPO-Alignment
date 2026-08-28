@@ -15,6 +15,10 @@ import re
 import sys
 from pathlib import Path
 
+# Windows consoles default to cp1252, which can't encode the ⓘ/✓/✗ glyphs below.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 TEMPLATE_MARKERS = [
     r"<Họ Tên>",
     r"<A20-K1 / A20-K2",

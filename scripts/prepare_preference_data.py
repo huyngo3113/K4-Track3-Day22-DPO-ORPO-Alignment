@@ -26,7 +26,7 @@ def main():
     parser.add_argument(
         "--dataset",
         default=os.environ.get(
-            "PREF_DATASET", "argilla/ultrafeedback-binarized-preferences-cleaned"
+            "PREF_DATASET", "argilla/ultrafeedback-binarized-preferences"
         ),
     )
     parser.add_argument("--slice", type=int, default=None,
@@ -53,12 +53,15 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     def fmt(row):
-        prompt_msgs = [{"role": "user", "content": row["prompt"]}]
+        prompt_raw = row.get("prompt", row.get("instruction"))
+        prompt_msgs = [{"role": "user", "content": prompt_raw}]
         prompt_text = tokenizer.apply_chat_template(
             prompt_msgs, tokenize=False, add_generation_prompt=True
         )
-        chosen = row["chosen"][-1]["content"] if isinstance(row["chosen"], list) else row["chosen"]
-        rejected = row["rejected"][-1]["content"] if isinstance(row["rejected"], list) else row["rejected"]
+        chosen_raw = row.get("chosen", row.get("chosen_response"))
+        rejected_raw = row.get("rejected", row.get("rejected_response"))
+        chosen = chosen_raw[-1]["content"] if isinstance(chosen_raw, list) else chosen_raw
+        rejected = rejected_raw[-1]["content"] if isinstance(rejected_raw, list) else rejected_raw
         return {"prompt": prompt_text, "chosen": chosen, "rejected": rejected}
 
     pref = ds.map(fmt, remove_columns=ds.column_names)
