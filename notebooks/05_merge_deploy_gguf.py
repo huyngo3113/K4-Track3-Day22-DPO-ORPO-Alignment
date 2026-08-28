@@ -70,15 +70,19 @@ tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-# Stack SFT-mini → DPO adapters
-SFT_PATH = REPO_ROOT / "adapters" / "sft-mini"
-model = PeftModel.from_pretrained(model, str(SFT_PATH))
-print(f"Loaded SFT-mini adapter from {SFT_PATH}")
+# The DPO adapter (adapters/dpo/) already encodes the full SFT+DPO effect --
+# NB3 trained it as a new LoRA stacked on top of the SFT-loaded PeftModel, and
+# peft folds that into one saved adapter (same pattern NB4 uses in
+# generate_with_adapter(): loading DPO_PATH alone reproduces "SFT+DPO").
+# Loading SFT_PATH here instead would merge SFT-only and silently drop DPO.
+model = PeftModel.from_pretrained(model, str(DPO_PATH))
+print(f"Loaded DPO adapter (SFT+DPO stacked) from {DPO_PATH}")
 
 # %% [markdown]
-# > **Note:** The DPO adapter trained in NB3 stacks on top of SFT. To get a fully
-# > aligned merged model, we apply both adapters before merging. Unsloth's
-# > `save_pretrained_merged` handles the SFT + DPO + base merge in one shot.
+# > **Note:** The DPO adapter trained in NB3 stacks on top of SFT -- loading
+# > `adapters/dpo/` alone already reproduces the full SFT+DPO effect, so there's
+# > no separate SFT-merge step. Unsloth's `save_pretrained_merged` handles the
+# > base + adapter merge in one shot.
 
 # %% [markdown]
 # ## 2. Save merged FP16 weights
