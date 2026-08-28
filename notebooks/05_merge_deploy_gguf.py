@@ -97,6 +97,18 @@ model.save_pretrained_merged(
 )
 print(f"Saved merged FP16 to {MERGED_PATH}")
 
+# save_pretrained_merged() can leave the base 4-bit model's `quantization_config`
+# in the merged config.json even though the weights are now plain fp16. Reloading
+# with that stale field makes transformers try to re-apply bnb 4-bit quantization
+# to an already-merged state dict, which fails with
+# "AttributeError: Linear4bit has no attribute `base_layer`". Strip it.
+merged_config_path = MERGED_PATH / "config.json"
+merged_config = json.loads(merged_config_path.read_text())
+if "quantization_config" in merged_config:
+    del merged_config["quantization_config"]
+    merged_config_path.write_text(json.dumps(merged_config, indent=2))
+    print("Stripped stale quantization_config from merged config.json")
+
 # Free GPU memory before GGUF conversion (which spawns a subprocess that needs RAM)
 import gc
 
