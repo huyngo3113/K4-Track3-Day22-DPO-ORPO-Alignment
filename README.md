@@ -80,7 +80,7 @@ Hoặc Colab Pro / Kaggle: open `colab/Lab22_DPO_BigGPU.ipynb` (badge link sẽ 
 | Notebook | Skill | Slide deliverable | Pass when… |
 |---|---|---|---|
 | `01_sft_mini` | Re-build Lab 21 SFT checkpoint inline (Unsloth + LoRA r=16, 1k VN Alpaca, 1 epoch) | Bullet 1 — base SFT artifact | adapter saves; loss decreases monotonically |
-| `02_preference_data` | Load `argilla/ultrafeedback-binarized-preferences`, format `prompt/chosen/rejected`, save Parquet | Bullet 2 — preference data ready | parquet written; chosen ≠ rejected; 3 examples printed |
+| `02_preference_data` | Load `argilla/ultrafeedback-binarized-preferences-cleaned`, format `prompt/chosen/rejected`, save Parquet | Bullet 2 — preference data ready | parquet written; chosen ≠ rejected; 3 examples printed |
 | `03_dpo_train` | TRL `DPOTrainer(beta=0.1, lr=5e-7)` on SFT model + frozen reference; plot reward curves | Bullet 3 — DPO training + reward curves | adapter saves; reward gap > 0; chosen reward ↑ (or ↓ explained per deck §3.4) |
 | `04_compare_and_eval` | 8 fixed prompts × {SFT, SFT+DPO} side-by-side; optional GPT-4o/Claude judge | Bullet 4 — helpfulness comparison | table renders; ≥ 8 examples; win/loss/tie counts reported |
 | `05_merge_deploy_gguf` **(OPTIONAL)** | `merge_and_unload()` → GGUF Q4_K_M → llama-cpp-python smoke test | Bullet 5 — deployable artifact | GGUF < 5 GB; smoke prompt returns coherent VN |
@@ -211,7 +211,7 @@ Full provocations: [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) (tiếng Việt) �
 ├── adapters/                       # gitignored; SFT + DPO outputs
 ├── submission/
 │   ├── REFLECTION.md               # personal report template (6 sections)
-│   └── screenshots/                # add 5 required + up to 5 optional screenshots
+│   └── screenshots/                # add 6 required + 3 optional screenshots
 └── solutions/                      # released after submission deadline
     └── README.md
 ```
@@ -222,6 +222,7 @@ Full provocations: [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) (tiếng Việt) �
 
 | Triệu chứng | Fix |
 |---|---|
+| `NotImplementedError: No operator found for memory_efficient_attention_backward` ở NB3 (`cutlassB` ... `does not support BMGHK format`) | T4 là sm75; hai backend flash-attn của xformers cần sm80+, còn `cutlassB` không làm được layout GQA. Chặn import: `sys.modules["xformers"] = None` **trước** mọi `import unsloth` — Unsloth fallback sang torch SDPA. Đừng dùng `pip uninstall`: cell install kéo xformers về mỗi lần Run-all. Colab notebook đã có cell guard làm sẵn. |
 | OOM ngay khi load model | Đang dùng tier sai. T4 → `Qwen2.5-3B`; nếu vẫn OOM, restart runtime + downgrade `unsloth` 1 minor |
 | `chosen_rewards` không tăng | Bình thường ở 100 step đầu. Sau 500 step nếu vẫn flat → giảm `beta` 0.1 → 0.05 hoặc tăng `lr` 5e-7 → 1e-6 |
 | `chosen_rewards` *giảm* mà reward gap *tăng* | Đó là **likelihood displacement** (deck §3.4). Bình thường ở DPO; ghi vào REFLECTION § "β trade-off" |
@@ -247,7 +248,7 @@ Full provocations: [`BONUS-CHALLENGE.md`](BONUS-CHALLENGE.md) (tiếng Việt) �
    git remote add origin https://github.com/huyngo3113/K4-Track3-Day22-DPO-ORPO-Alignment.git
    ```
 2. Hoàn thành 5 notebooks (giữ output cells trong `.ipynb`).
-3. Add ảnh chụp vào `submission/screenshots/` (xem [`submission/screenshots/README.md`](submission/screenshots/README.md) để biết list 5 required + 5 optional).
+3. Add ảnh chụp vào `submission/screenshots/` (xem [`submission/screenshots/README.md`](submission/screenshots/README.md) để biết list 6+3).
 4. Điền [`submission/REFLECTION.md`](submission/REFLECTION.md) (6 sections, ≥150 từ §3 + §6).
 5. `make verify` — pre-submission gatekeeper. Nếu fail, fix và rerun.
 6. Push lên public repo:

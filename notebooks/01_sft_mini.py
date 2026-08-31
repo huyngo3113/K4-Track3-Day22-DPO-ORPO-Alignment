@@ -41,9 +41,6 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-# NOTE: "5CD-AI/Vietnamese-alpaca-cleaned" (original default) is 404 on the
-# Hub. Swapped to "bkai-foundation-models/vi-alpaca" -- same
-# instruction/input/output schema, same VN Alpaca content.
 SFT_DATASET = os.environ.get("SFT_DATASET", "bkai-foundation-models/vi-alpaca")
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
@@ -75,7 +72,6 @@ print(f"GPU: {gpu.name}  ({gpu.total_memory / 1e9:.1f} GB)")
 
 # %%
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL,
@@ -84,14 +80,17 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
-# `unsloth/Qwen2.5-*-bnb-4bit` is the base (non-Instruct) checkpoint — it
-# ships without a chat_template, so apply_chat_template() would raise later.
-tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
-
 # Critical for batch training — Qwen tokenizers ship without pad token.
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
     print("Set tokenizer.pad_token = eos_token")
+
+# Base (non-instruct) Qwen2.5 ships WITHOUT a chat template; attach Qwen's.
+# No-op when the tokenizer already carries one (e.g. loaded from adapters/sft-mini).
+if getattr(tokenizer, "chat_template", None) is None:
+    from unsloth.chat_templates import get_chat_template
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+    print("Attached qwen-2.5 chat template")
 
 # %%
 model = FastLanguageModel.get_peft_model(
@@ -114,7 +113,7 @@ print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requir
 # %% [markdown]
 # ## 2. Load + format VN Alpaca slice
 #
-# `bkai-foundation-models/vi-alpaca` is a VN Alpaca translation. Lab 21
+# `bkai-foundation-models/vi-alpaca` is a 50k-row VN Alpaca translation. Lab 21
 # uses 1k slice for the demo run; we match that exactly so reward gap is comparable.
 
 # %%

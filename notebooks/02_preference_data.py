@@ -37,11 +37,8 @@ else:
     MAX_LEN = 1024
     MAX_PROMPT_LEN = 512
 
-# NOTE: original default "argilla/ultrafeedback-binarized-preferences-cleaned"
-# is gone from the Hub (404). Swapped to "argilla/ultrafeedback-binarized-preferences"
-# (same UltraFeedback source, different cleaning pass) -- affects all tiers.
 PREF_DATASET = os.environ.get(
-    "PREF_DATASET", "argilla/ultrafeedback-binarized-preferences"
+    "PREF_DATASET", "argilla/ultrafeedback-binarized-preferences-cleaned"
 )
 
 REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
@@ -92,19 +89,14 @@ print(f"Loaded {len(ds)} pairs. Columns: {ds.column_names}")
 
 # %%
 def format_pref(row):
-    # Schema varies by dataset variant: some ship `prompt`/`chosen`/`rejected`
-    # (chosen/rejected as list-of-dicts chat turns), others (the current
-    # "argilla/ultrafeedback-binarized-preferences") ship `instruction`/
-    # `chosen_response`/`rejected_response` as plain strings. Handle both.
-    prompt_raw = row.get("prompt", row.get("instruction"))
-    prompt_msgs = [{"role": "user", "content": prompt_raw}]
+    prompt_msgs = [{"role": "user", "content": row["prompt"]}]
     prompt_text = tokenizer.apply_chat_template(
         prompt_msgs, tokenize=False, add_generation_prompt=True
     )
-    chosen_raw = row.get("chosen", row.get("chosen_response"))
-    rejected_raw = row.get("rejected", row.get("rejected_response"))
-    chosen_text = chosen_raw[-1]["content"] if isinstance(chosen_raw, list) else chosen_raw
-    rejected_text = rejected_raw[-1]["content"] if isinstance(rejected_raw, list) else rejected_raw
+    # `chosen` and `rejected` in this dataset are list-of-dicts with role/content.
+    # Take just the assistant turn text (last message).
+    chosen_text = row["chosen"][-1]["content"] if isinstance(row["chosen"], list) else row["chosen"]
+    rejected_text = row["rejected"][-1]["content"] if isinstance(row["rejected"], list) else row["rejected"]
     return {
         "prompt": prompt_text,
         "chosen": chosen_text,
@@ -162,9 +154,8 @@ if fit_pct < 80:
 pref.to_parquet(str(PREF_OUT / "train.parquet"))
 print(f"Saved {len(pref)} pairs to {PREF_OUT / 'train.parquet'}")
 
-# Also save a small eval slice (last 50 pairs, or 20% for small CPU-tier slices) for NB4 use.
-n_eval = min(50, max(1, len(pref) // 5))
-eval_slice = pref.select(range(len(pref) - n_eval, len(pref)))
+# Also save a small eval slice (last 50 pairs) for NB4 use.
+eval_slice = pref.select(range(len(pref) - 50, len(pref)))
 eval_slice.to_parquet(str(PREF_OUT / "eval.parquet"))
 print(f"Saved 50 eval pairs to {PREF_OUT / 'eval.parquet'}")
 

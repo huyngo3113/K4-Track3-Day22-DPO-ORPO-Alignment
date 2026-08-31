@@ -186,7 +186,6 @@ print(f"Loaded {len(alpaca_prompts)} AlpacaEval-lite prompts")
 def generate_with_adapter(adapter_path, prompts, max_new_tokens=256):
     """NB4 pattern: load base + adapter, generate, free memory."""
     from unsloth import FastLanguageModel
-    from unsloth.chat_templates import get_chat_template
     from peft import PeftModel
 
     base = "unsloth/Qwen2.5-3B-bnb-4bit" if COMPUTE_TIER == "T4" else "unsloth/Qwen2.5-7B-bnb-4bit"
@@ -195,9 +194,15 @@ def generate_with_adapter(adapter_path, prompts, max_new_tokens=256):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base, max_seq_length=max_len, dtype=None, load_in_4bit=True,
     )
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Base (non-instruct) Qwen2.5 ships WITHOUT a chat template; attach Qwen's.
+    # No-op when the tokenizer already carries one (e.g. loaded from adapters/sft-mini).
+    if getattr(tokenizer, "chat_template", None) is None:
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+        print("Attached qwen-2.5 chat template")
     model = PeftModel.from_pretrained(model, str(adapter_path))
     FastLanguageModel.for_inference(model)
 

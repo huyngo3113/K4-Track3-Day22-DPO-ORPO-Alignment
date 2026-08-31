@@ -27,14 +27,12 @@ COMPUTE_TIER = os.environ.get("COMPUTE_TIER", "T4").upper()
 
 if COMPUTE_TIER == "T4":
     BASE_MODEL = "unsloth/Qwen2.5-3B-bnb-4bit"
-    INSTRUCT_MODEL = "Qwen/Qwen2.5-3B-Instruct"  # chat_template source on the no-Unsloth fallback path
     MAX_LEN = 512
     MAX_PROMPT_LEN = 256
     PER_DEVICE_BATCH = 1
     GRAD_ACCUM = 8
 else:
     BASE_MODEL = "unsloth/Qwen2.5-7B-bnb-4bit"
-    INSTRUCT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
     MAX_LEN = 1024
     MAX_PROMPT_LEN = 512
     PER_DEVICE_BATCH = 1
@@ -78,38 +76,64 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # sequences, not from a second copy of the weights.
 
 # %%
-# xformers' Triton GQA kernel (what Unsloth's fast attention calls for
-# Qwen2.5) requires compute capability >= 8.0 (Ampere+). DPOTrainer is the
-# first place that hits it because its backward pass runs on the
-# concatenated chosen+rejected batch -- NB1/SFT never triggers a backward
-# through this kernel.
+# --- T4 (sm75) guard -- run BEFORE any `import unsloth` -----------------
+# Qwen2.5 uses grouped-query attention, so xformers hands attention a 5-dim
+# BMGHK layout. On Turing (T4, capability 7.5) both flash-attn backward kernels
+# need capability >= 8.0, and `cutlassB` -- the only sm75 backward op -- does
+# not support BMGHK. DPO then dies with:
+#   NotImplementedError: No operator found for memory_efficient_attention_backward
 #
-# **This is a process-wide monkeypatch, not a per-model setting.** `import
-# unsloth` (even indirectly, e.g. `from unsloth.chat_templates import ...`)
-# patches `Qwen2Attention.forward` at the class level for the whole Python
-# process -- so a plain `transformers.AutoModelForCausalLM` load is
-# affected too if Unsloth was ever imported earlier in this kernel (e.g. by
-# running NB1 in the same session). Passing `attn_implementation="eager"`
-# does NOT override this, because the patch replaces the method, not the
-# config-driven dispatch.
+# `pip uninstall xformers` does NOT hold: it comes back as an Unsloth
+# dependency on the next install. Blocking the *import* does hold -- None in
+# sys.modules makes `import xformers` raise ImportError, Unsloth catches it,
+# sets HAS_XFORMERS = False, and falls back to torch SDPA, which handles GQA
+# on sm75 fine. Upstream Unsloth added this same capability guard in
+# unsloth/utils/attention_dispatch.py; older pinned versions predate it.
 #
-# **You must restart the runtime AFTER NB1 and BEFORE this cell** so this
-# kernel has never imported unsloth. NB1's adapter is already saved to
-# disk, so you don't need to re-run its training cell -- NB2 doesn't
-# import unsloth either (it loads the tokenizer from the saved adapter
-# dir), so re-running NB2 then this cell in the fresh kernel is enough.
-if COMPUTE_TIER == "T4":
-    import sys
-    assert "unsloth" not in sys.modules, (
-        "unsloth is already imported in this kernel (likely from running NB1 in the "
-        "same session). Its attention patch is process-wide and attn_implementation="
-        "\"eager\" cannot override it. Restart the runtime, then re-run from NB2 -- "
-        "NB1's adapter is already saved to disk, no need to retrain it."
-    )
+# Trade-off: SDPA is slower than flash-attn, so this step takes longer than
+# the README's ~15 min T4 estimate.
+import sys
 
-from peft import PeftModel, LoraConfig, get_peft_model
+if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+    for _mod in [k for k in list(sys.modules) if k == "xformers" or k.startswith("xformers.")]:
+        del sys.modules[_mod]
+    sys.modules["xformers"] = None
+    sys.modules["xformers.ops"] = None
+    print(f"Capability {torch.cuda.get_device_capability()} < (8, 0): xformers import "
+          f"blocked, Unsloth will use torch SDPA.")
+else:
+    print("Ampere or newer -- xformers flash backward is fine, nothing to do.")
 
-LORA_KWARGS = dict(
+# %%
+from unsloth import FastLanguageModel
+from peft import PeftModel
+
+# Policy — gets new DPO LoRA adapter on top of SFT LoRA
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=BASE_MODEL,
+    max_seq_length=MAX_LEN,
+    dtype=None,
+    load_in_4bit=True,
+)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+# Base (non-instruct) Qwen2.5 ships WITHOUT a chat template; attach Qwen's.
+# No-op when the tokenizer already carries one (e.g. loaded from adapters/sft-mini).
+if getattr(tokenizer, "chat_template", None) is None:
+    from unsloth.chat_templates import get_chat_template
+    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
+    print("Attached qwen-2.5 chat template")
+
+# Load SFT adapter on top of base
+model = PeftModel.from_pretrained(model, str(SFT_PATH), is_trainable=True)
+print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
+
+# %%
+# Wrap policy with NEW LoRA adapter for DPO updates (don't merge SFT — keep stacked)
+# Unsloth re-applies LoRA on top of the existing PeftModel.
+model = FastLanguageModel.get_peft_model(
+    model,
     r=16,
     lora_alpha=32,
     lora_dropout=0.0,
@@ -118,58 +142,11 @@ LORA_KWARGS = dict(
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
+    use_gradient_checkpointing="unsloth",
+    random_state=42,
+    use_rslora=False,
+    loftq_config=None,
 )
-
-major, minor = torch.cuda.get_device_capability()
-if (major, minor) < (8, 0):
-    print(f"GPU capability {major}.{minor} < 8.0 -- loading via plain transformers (eager attention), never importing unsloth.")
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    # unsloth.chat_templates.get_chat_template() would re-trigger the global
-    # patch we're avoiding -- copy the chat_template from the Instruct
-    # sibling instead (same family, same template, zero unsloth import).
-    tokenizer.chat_template = AutoTokenizer.from_pretrained(INSTRUCT_MODEL).chat_template
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    base = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL, dtype=torch.float16, attn_implementation="eager", device_map={"": 0},
-    )
-    model = PeftModel.from_pretrained(base, str(SFT_PATH), is_trainable=True)
-    print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
-
-    model = get_peft_model(model, LoraConfig(task_type="CAUSAL_LM", **LORA_KWARGS))
-    model.gradient_checkpointing_enable()
-else:
-    from unsloth import FastLanguageModel
-    from unsloth.chat_templates import get_chat_template
-
-    # Policy — gets new DPO LoRA adapter on top of SFT LoRA
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=BASE_MODEL,
-        max_seq_length=MAX_LEN,
-        dtype=None,
-        load_in_4bit=True,
-    )
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Load SFT adapter on top of base
-    model = PeftModel.from_pretrained(model, str(SFT_PATH), is_trainable=True)
-    print(f"Policy: {model.__class__.__name__} with SFT adapter loaded")
-
-    # Wrap policy with NEW LoRA adapter for DPO updates (don't merge SFT — keep stacked)
-    # Unsloth re-applies LoRA on top of the existing PeftModel.
-    model = FastLanguageModel.get_peft_model(
-        model,
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
-        use_rslora=False,
-        loftq_config=None,
-        **LORA_KWARGS,
-    )
 print(f"Trainable params (DPO LoRA): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
 # %% [markdown]

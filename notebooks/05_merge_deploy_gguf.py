@@ -57,7 +57,6 @@ assert torch.cuda.is_available()
 
 # %%
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template
 from peft import PeftModel
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -66,23 +65,28 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype=None,
     load_in_4bit=True,
 )
-tokenizer = get_chat_template(tokenizer, chat_template="qwen-2.5")
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-# The DPO adapter (adapters/dpo/) already encodes the full SFT+DPO effect --
-# NB3 trained it as a new LoRA stacked on top of the SFT-loaded PeftModel, and
-# peft folds that into one saved adapter (same pattern NB4 uses in
-# generate_with_adapter(): loading DPO_PATH alone reproduces "SFT+DPO").
-# Loading SFT_PATH here instead would merge SFT-only and silently drop DPO.
+# Stack SFT-mini → DPO adapters
+# NB3 loaded the SFT adapter with is_trainable=True and kept training THAT
+# adapter with DPO, then saved it to adapters/dpo. So adapters/dpo is already a
+# single LoRA carrying SFT + DPO -- there is nothing to stack. Loading
+# adapters/sft-mini here would silently merge the pre-DPO checkpoint and ship a
+# GGUF that never saw preference training.
 model = PeftModel.from_pretrained(model, str(DPO_PATH))
-print(f"Loaded DPO adapter (SFT+DPO stacked) from {DPO_PATH}")
+print(f"Loaded SFT+DPO adapter from {DPO_PATH}")
 
 # %% [markdown]
-# > **Note:** The DPO adapter trained in NB3 stacks on top of SFT -- loading
-# > `adapters/dpo/` alone already reproduces the full SFT+DPO effect, so there's
-# > no separate SFT-merge step. Unsloth's `save_pretrained_merged` handles the
-# > base + adapter merge in one shot.
+# > **Note:** `adapters/dpo` already contains SFT + DPO in one LoRA (NB3 kept
+# > training the SFT adapter rather than creating a second one), so a single
+# > `PeftModel.from_pretrained` is correct here. Unsloth's
+# > `save_pretrained_merged` folds that adapter into the base weights.
+# >
+# > **Requires transformers < 5.** The 4-bit dequantize path in the merge hits
+# > `NotImplementedError` in `transformers/core_model_loading.py` on v5.x. The
+# > Colab install cell does not pin transformers, so it resolves to 5.5.0 --
+# > run `pip install "transformers>=4.51.3,<5.0"` and restart before this cell.
 
 # %% [markdown]
 # ## 2. Save merged FP16 weights
@@ -92,7 +96,7 @@ print(f"Loaded DPO adapter (SFT+DPO stacked) from {DPO_PATH}")
 # converter in step 3.
 
 # %%
-# This re-loads the model with both SFT and DPO adapters merged into base weights.
+# Folds the SFT+DPO adapter into the base weights.
 # Output is FP16 (or BF16 on Ampere+) HF-format weights ready for inference.
 model.save_pretrained_merged(
     str(MERGED_PATH),
@@ -100,18 +104,6 @@ model.save_pretrained_merged(
     save_method="merged_16bit",
 )
 print(f"Saved merged FP16 to {MERGED_PATH}")
-
-# save_pretrained_merged() can leave the base 4-bit model's `quantization_config`
-# in the merged config.json even though the weights are now plain fp16. Reloading
-# with that stale field makes transformers try to re-apply bnb 4-bit quantization
-# to an already-merged state dict, which fails with
-# "AttributeError: Linear4bit has no attribute `base_layer`". Strip it.
-merged_config_path = MERGED_PATH / "config.json"
-merged_config = json.loads(merged_config_path.read_text())
-if "quantization_config" in merged_config:
-    del merged_config["quantization_config"]
-    merged_config_path.write_text(json.dumps(merged_config, indent=2))
-    print("Stripped stale quantization_config from merged config.json")
 
 # Free GPU memory before GGUF conversion (which spawns a subprocess that needs RAM)
 import gc

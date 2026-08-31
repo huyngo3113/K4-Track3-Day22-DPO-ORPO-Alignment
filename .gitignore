@@ -38,3 +38,8 @@ hf_cache/
 .idea/
 .vscode/
 *.swp
+
+# Run leftovers (do not commit)
+adapters/merged-fp16/
+notebooks/huggingface_tokenizers_cache/
+notebooks/unsloth_compiled_cache/
