@@ -20,6 +20,10 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def main():
+    # Reduces CUDA allocator fragmentation -- helps on GPUs running right at
+    # the VRAM edge (e.g. T4 16GB with no flash-attn, using torch SDPA).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=5e-7)
@@ -27,6 +31,8 @@ def main():
     parser.add_argument("--sft-path", default=str(REPO / "adapters" / "sft-mini"))
     parser.add_argument("--pref-path", default=str(REPO / "data" / "pref" / "train.parquet"))
     parser.add_argument("--output-dir", default=str(REPO / "adapters" / "dpo"))
+    parser.add_argument("--max-len", type=int, default=None,
+                         help="Override max_length (lower this if you hit CUDA OOM)")
     args = parser.parse_args()
 
     tier = os.environ.get("COMPUTE_TIER", "T4").upper()
@@ -38,6 +44,10 @@ def main():
         base_model = "unsloth/Qwen2.5-7B-bnb-4bit"
         max_len, max_prompt = 1024, 512
         batch, grad_accum = 1, 4
+
+    if args.max_len is not None:
+        max_len = args.max_len
+        max_prompt = max_len // 2
 
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
