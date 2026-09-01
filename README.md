@@ -5,6 +5,8 @@ Build SFT-mini checkpoint → train DPO adapter → compare SFT-only vs SFT+DPO 
 
 > Lab 22 là **lab alignment đầu tiên trong khoá** — bạn đi từ SFT (Lab 21) sang preference learning, đo helpfulness/safety bằng judge, và export model deployable. Output có thể là 1 **DPO-aligned VN model open-source publishable đầu tiên end-to-end của khoá** (xem deck §5).
 
+> **Submission Option B:** DPO adapter đã publish lên HuggingFace Hub — [huyngo3113/lab22-dpo-vn](https://huggingface.co/huyngo3113/lab22-dpo-vn).
+
 ---
 
 ## Hai tier — chọn cái phù hợp

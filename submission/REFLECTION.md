@@ -325,7 +325,7 @@ không có cảnh báo nào.
 ## Bonus
 
 - [ ] Đã làm β-sweep (rigor add-on +6)
-- [ ] Đã push lên HuggingFace Hub (Submission Option B, +5)
+- [x] Đã push lên HuggingFace Hub (Submission Option B, +5) — https://huggingface.co/huyngo3113/lab22-dpo-vn
 - [ ] Đã release GGUF với multiple quantizations (+3)
 - [ ] Đã link W&B run public (+2)
 - [ ] Đã làm cross-judge comparison (+4)
